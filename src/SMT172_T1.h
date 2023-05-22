@@ -72,7 +72,7 @@ void startTemperatureByTime(uint16_t ms)
  lgt8f328p @ 32 MHz
    */
 
-#if defined(__AVR_ATmega168__) || defined(__AVR_ATmega168P__) || defined(__AVR_ATmega328P__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega644__) || defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__) || defined(__AVR_ATmega32U4__)
+#if defined(__AVR_ATmega168__) || defined(__AVR_ATmega168P__) || defined(__AVR_ATmega328P__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega644__) || defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__) || defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega4809__)
 
 #ifndef SMT172_T1_h
 #define SMT172_T1_h
@@ -86,6 +86,10 @@ void startTemperatureByTime(uint16_t ms)
 namespace SMT172_T1 {
 
 void startTemperatureByTime(uint16_t ms);
+
+#if defined(__AVR_ATmega4809__)
+void TCB1_init(void);
+#endif
 
 uint16_t startTemperature(float sensorError);
 

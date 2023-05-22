@@ -1,6 +1,6 @@
 /*
  ---------------------------------------------------------------------------
- Created by Edwin Croissant
+ Created by Edwin Croissant, ATmega4809 support added by Milan Milenovic
  Copyright 2016 License: GNU GPL v3 http://www.gnu.org/licenses/gpl-3.0.html
 
  See "SMT172_T1.h" for purpose, syntax, version history, links, and more.
@@ -20,6 +20,133 @@ volatile uint32_t totalHighLevelTicks;
 volatile uint32_t interimSensorError;
 }
 
+#if defined(__AVR_ATmega4809__)
+
+void SMT172_T1::TCB1_init (void)
+{
+   //TCB1 is used for sensor disconnected detection. TODO: It is probably possible to do this only using TCB0
+    EVSYS.CHANNEL1 = 0b01001000; // event channel 1 connects to pin PB0 (Port B, Pin 0 = Arduino ~D9) WARNING! Not all generators can be connected to all channels!
+    EVSYS.USERTCB1 = 2;          // connect the counter to event channel 1 (2-1)
+
+    /* Load the Compare or Capture register with the timeout value*/
+    TCB1.CCMP = 3686; //900 Hz    16000:65535=900:CCMP
+
+    /* Enable TCB and set CLK_PER divider to 1 (No Prescaling) */
+    TCB1.CTRLA = TCB_CLKSEL_CLKDIV1_gc | TCB_ENABLE_bm;
+
+    /* Configure TCB in Periodic Timeout mode */
+    TCB1.CTRLB = TCB_CNTMODE_TIMEOUT_gc;
+
+    /* Enable Capture or Timeout interrupt */
+    TCB1.INTCTRL = TCB_CAPT_bm;
+
+    /* Enable Event Input and Event Edge*/
+ 
+    TCB1.EVCTRL = 1 << TCB_CAPTEI_bp    // TCBn.EVCTRL: Event Input Enable (enabled)
+                  | 0 << TCB_EDGE_bp    // TCBn.EVCTRL: Event Edge: (positive edge)
+                  | 1 << TCB_FILTER_bp; // TCBn.EVCTRL: Input Capture Noise Cancellation Filter (1 enabled, 0 disabled)
+}
+
+ISR(TCB1_INT_vect)
+{
+
+    TCB1.INTFLAGS = TCB_CAPT_bm; /* Clear the interrupt flag */
+    status=2; // sensor disconnected
+}
+
+ISR(TCB0_INT_vect)
+{
+   
+   uint16_t tempStamp;
+   uint16_t cycleTicks;
+   uint16_t highLevelTicks;
+   tempStamp = TCB0.CCMP;
+             
+   TCB0.EVCTRL ^= _BV(TCB_EDGE_bp); // Toggle Input Capture Edge Select directly after interrupt is read
+   
+   if (bitRead(TCB0.EVCTRL, TCB_EDGE_bp) == 0) // if true we have a falling edge
+   {
+      if (cycleCount > 0)
+      {
+         highLevelTicks = tempStamp - prevRaisingEdgeStamp;
+         totalHighLevelTicks += highLevelTicks;
+         cycleTicks = tempStamp - prevFallingEdgeStamp;
+         totalTicks += cycleTicks;
+         if ((totalTicks >= minTicks) // always measure a multiple of 8 sensor cycles
+             && (cycleCount % 8 == 0))
+         {
+            
+            TCB0.INTCTRL = 0 << TCB_CAPT_bp; // disable interrupts from this timer for now
+            TCB0.INTFLAGS = 1;               // clear pending interrupts as we are done. Anything else to clear?
+            
+            status = 1;
+            return;
+         }
+      }
+      prevFallingEdgeStamp = tempStamp;
+      cycleCount++;
+   }
+   else
+   {
+      prevRaisingEdgeStamp = tempStamp;
+   }
+}
+
+void SMT172_T1::startTemperatureByTime(uint16_t ms)
+{
+   /* 	initialize Timer1 to measure the duty cycle
+      during a minimum of ms time	*/
+
+   cycleCount = 0;
+   status = 0;
+   totalTicks = 0;
+   totalHighLevelTicks = 0;
+   minTicks = F_CPU / 1000 * ms;
+
+   EVSYS.CHANNEL1 = 0b01001000; // event channel 1 connects to pin PB0 (Port B, Pin 0 = Arduino ~D9) WARNING! Not all generators can be connected to all channels!
+   EVSYS.USERTCB0 = 2;          // connect the counter to event channel 1 (2-1)
+
+   TCB0.CTRLA = TCB_CLKSEL_CLKDIV1_gc   // TCBn.CTRLA: CLK_PER (CLKDIV1 aka No-Prescaling)
+                | 1 << TCB_ENABLE_bp    // TCBn.CTRLA: Enable bit position (enabled)
+                | 0 << TCB_RUNSTDBY_bp; // TCBn.CTRLA: Run Standby bit position (disabled)
+
+   TCB0.CTRLB = 0 << TCB_ASYNC_bp      // TCBn.CTRLB: Asynchronous Enable: disabled
+                | TCB_CNTMODE_CAPT_gc; // TCBn.CTRLB: Input Capture Event
+
+   TCB0.CNT = 0x0000; // Timer/Counter to zero
+
+   TCB0.INTFLAGS = 1;               // clear pending interrupts so we don't get a bogus one
+  
+   TCB0.EVCTRL = 1 << TCB_CAPTEI_bp    // TCBn.EVCTRL: Event Input Enable (enabled)
+                 | 0 << TCB_EDGE_bp    // TCBn.EVCTRL: Event Edge: (positive edge)
+                 | 1 << TCB_FILTER_bp; // TCBn.EVCTRL: Input Capture Noise Cancellation Filter (1 enabled, 0 disabled)
+
+   TCB0.INTCTRL = 1 << TCB_CAPT_bp; // TCBn.INTCTRL: Capture Interrupt Enable (enabled)
+   TCB0.CTRLA |= TCB_ENABLE_bm; // TCBn.CTRLA: bit0=Enable bit mask (Not needed?)
+}
+
+uint16_t SMT172_T1::startTemperature(float sensorError)
+{
+   /* Calculate the minimum time required in ms for the required sensor error based on the
+    * previous captured sensor frequency. Returns the minimum time in ms. */
+
+   uint16_t ms;
+
+   if (totalTicks == 0)
+      ms = 1;
+   else
+      ms = 1000 * (20000.00 * getFrequency()) / (3 * pow(sensorError, 2) * pow(F_CPU, 2));
+   startTemperatureByTime(ms);
+   return ms;
+}
+
+uint8_t SMT172_T1::getStatus(void)
+{
+   // return 0 when busy, 1 when success, 2 when not connected
+   return status;
+}
+#else
+//other boards code goes here
 ISR (TIMER1_COMPA_vect) {
 	// sensor frequency is lower then 488 Hz @ 32 Mhz and 244 Hz @ 16 Mhz. Disconnected sensor?
 
@@ -99,7 +226,7 @@ uint8_t SMT172_T1::getStatus(void) {
 	// return 0 when busy, 1 when success, 2 when not connected
 	return status;
 }
-
+#endif
 
 float SMT172_T1::getTemperature(void) {
 	// return the temperature from the previous startTemperature command
